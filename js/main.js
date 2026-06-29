@@ -114,6 +114,68 @@ function placeBuilding(name, col, row) {
   return true;
 }
 
+// ── Auto-tiling wall system ───────────────────────────────────────────────
+// Bitmask: N=1  E=2  S=4  W=8
+const WALL_NAMES = new Set([
+  'Stone Wall H', 'Stone Wall V',
+  'Stone Wall TL', 'Stone Wall TR',
+  'Stone Wall BL', 'Stone Wall BR',
+]);
+const WALL_TILE = [
+  'Stone Wall H',  // 0  – isolated
+  'Stone Wall V',  // 1  – N
+  'Stone Wall H',  // 2  – E
+  'Stone Wall TR', // 3  – N+E
+  'Stone Wall V',  // 4  – S
+  'Stone Wall V',  // 5  – N+S  (straight vertical)
+  'Stone Wall BR', // 6  – E+S
+  'Stone Wall V',  // 7  – N+E+S  (T, no tile → V)
+  'Stone Wall H',  // 8  – W
+  'Stone Wall TL', // 9  – N+W
+  'Stone Wall H',  // 10 – E+W  (straight horizontal)
+  'Stone Wall H',  // 11 – N+E+W  (T, no tile → H)
+  'Stone Wall BL', // 12 – S+W
+  'Stone Wall V',  // 13 – N+S+W  (T, no tile → V)
+  'Stone Wall H',  // 14 – E+S+W  (T, no tile → H)
+  'Stone Wall H',  // 15 – all 4  (cross, no tile → H)
+];
+
+function _wallAt(col, row) {
+  const d = grid.getCellData(col, row);
+  return d !== null && WALL_NAMES.has(d.buildingId);
+}
+function _wallMask(col, row) {
+  let m = 0;
+  if (_wallAt(col,     row - 1)) m |= 1;
+  if (_wallAt(col + 1, row    )) m |= 2;
+  if (_wallAt(col,     row + 1)) m |= 4;
+  if (_wallAt(col - 1, row    )) m |= 8;
+  return m;
+}
+function _refreshWall(col, row) {
+  if (!_wallAt(col, row)) return;
+  const newName = WALL_TILE[_wallMask(col, row)];
+  const newDef  = buildingRegistry.get(newName);
+  if (!newDef) return;
+  grid.vacate(col, row, 1, 1);
+  grid.occupy(col, row, 1, 1, newName);
+  const pb = placedBuildings.find(b => b.col === col && b.row === row);
+  if (pb) pb.def = newDef;
+}
+function placeAutoWall(col, row) {
+  if (!grid.canPlace(col, row, 1, 1)) return false;
+  const init = buildingRegistry.get('Stone Wall H');
+  if (!init) return false;
+  grid.occupy(col, row, 1, 1, 'Stone Wall H');
+  placedBuildings.push({ col, row, def: init });
+  _refreshWall(col,     row);
+  _refreshWall(col,     row - 1);
+  _refreshWall(col + 1, row);
+  _refreshWall(col,     row + 1);
+  _refreshWall(col - 1, row);
+  return true;
+}
+
 // ── Initial building placement ────────────────────────────────────────────
 // 5 wooden walls in a horizontal row just below centre
 (function seedMap() {
@@ -128,6 +190,7 @@ let camY = -Math.floor(window.innerHeight / 2) + TILE_SIZE / 2;
 // ── Input state ──────────────────────────────────────────────────────────
 let hoverCell  = null;
 let isDragging = false;
+let dragMoved  = false;
 let dragStartX = 0;
 let dragStartY = 0;
 let camStartX  = 0;
@@ -135,6 +198,7 @@ let camStartY  = 0;
 
 canvas.addEventListener('mousedown', (e) => {
   isDragging = true;
+  dragMoved  = false;
   dragStartX = e.clientX;
   dragStartY = e.clientY;
   camStartX  = camX;
@@ -142,13 +206,26 @@ canvas.addEventListener('mousedown', (e) => {
   canvas.style.cursor = 'grabbing';
 });
 
-window.addEventListener('mouseup', () => {
+window.addEventListener('mouseup', (e) => {
+  if (isDragging && !dragMoved && window.selectedBuilding) {
+    const rect = canvas.getBoundingClientRect();
+    const cell = grid.screenToCell(
+      e.clientX - rect.left, e.clientY - rect.top, camX, camY
+    );
+    if (window.selectedBuilding === 'Stone Wall') {
+      placeAutoWall(cell.col, cell.row);
+    } else {
+      placeBuilding(window.selectedBuilding, cell.col, cell.row);
+    }
+  }
   isDragging = false;
-  canvas.style.cursor = 'default';
+  canvas.style.cursor = window.selectedBuilding ? 'crosshair' : 'default';
 });
 
 window.addEventListener('mousemove', (e) => {
   if (isDragging) {
+    if (Math.abs(e.clientX - dragStartX) > 3 || Math.abs(e.clientY - dragStartY) > 3)
+      dragMoved = true;
     camX = camStartX - (e.clientX - dragStartX);
     camY = camStartY - (e.clientY - dragStartY);
   } else {
@@ -178,6 +255,26 @@ function gameLoop() {
     if (sy + pb.def.h * TILE_SIZE < 0 || sy > canvas.height) return;
     ctx.drawImage(_getBuildingImage(pb.def), sx, sy);
   });
+
+  // Ghost preview when a building is selected
+  if (window.selectedBuilding && hoverCell && !isDragging) {
+    // For auto-wall, preview the tile type that WOULD be placed given current neighbours
+    const previewName = window.selectedBuilding === 'Stone Wall'
+      ? WALL_TILE[_wallMask(hoverCell.col, hoverCell.row)]
+      : window.selectedBuilding;
+    const def = buildingRegistry.get(previewName);
+    if (def) {
+      const sx = hoverCell.col * TILE_SIZE - camX;
+      const sy = hoverCell.row * TILE_SIZE - camY;
+      const canP = grid.canPlace(hoverCell.col, hoverCell.row, def.w, def.h);
+      ctx.globalAlpha = canP ? 0.65 : 0.4;
+      ctx.drawImage(_getBuildingImage(def), sx, sy);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = canP ? '#E8C040' : '#CC2222';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(sx + 1, sy + 1, def.w * TILE_SIZE - 2, def.h * TILE_SIZE - 2);
+    }
+  }
 
   requestAnimationFrame(gameLoop);
 }
