@@ -91,16 +91,16 @@ class Grid {
    * Draw only the tiles that are visible in the current viewport.
    *
    * @param {CanvasRenderingContext2D} ctx
-   * @param {number} camX        Camera x offset (pixels)
-   * @param {number} camY        Camera y offset (pixels)
-   * @param {number} viewW       Viewport width  (pixels)
-   * @param {number} viewH       Viewport height (pixels)
+   * @param {number} camX
+   * @param {number} camY
+   * @param {number} viewW
+   * @param {number} viewH
    * @param {{ col, row } | null} hoverCell
+   * @param {OffscreenCanvas[]} grassTiles  4 grass texture variants
    */
-  draw(ctx, camX, camY, viewW, viewH, hoverCell) {
+  draw(ctx, camX, camY, viewW, viewH, hoverCell, grassTiles) {
     const ts = this.tileSize;
 
-    // Tile range that intersects the viewport
     const startCol = Math.floor(camX / ts);
     const startRow = Math.floor(camY / ts);
     const endCol   = Math.ceil((camX + viewW) / ts);
@@ -108,22 +108,26 @@ class Grid {
 
     for (let r = startRow; r <= endRow; r++) {
       for (let c = startCol; c <= endCol; c++) {
-        const sx = c * ts - camX;  // screen x
-        const sy = r * ts - camY;  // screen y
+        const sx = c * ts - camX;
+        const sy = r * ts - camY;
 
-        // Fill
-        const occ = this._occupied.get(this._key(c, r));
-        ctx.fillStyle = occ ? '#8B7355' : this._grassColor(c, r);
-        ctx.fillRect(sx, sy, ts, ts);
+        // Grass background
+        if (grassTiles) {
+          ctx.drawImage(grassTiles(c, r), sx, sy);
+        } else {
+          ctx.fillStyle = this._grassColor(c, r);
+          ctx.fillRect(sx, sy, ts, ts);
+        }
 
-        // Hover highlight
-        if (hoverCell && hoverCell.col === c && hoverCell.row === r) {
+        // Hover highlight (unoccupied tiles only)
+        if (hoverCell && hoverCell.col === c && hoverCell.row === r
+            && !this._occupied.has(this._key(c, r))) {
           ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
           ctx.fillRect(sx, sy, ts, ts);
         }
 
         // Grid line
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.25)';
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.20)';
         ctx.lineWidth = 0.5;
         ctx.strokeRect(sx, sy, ts, ts);
       }
